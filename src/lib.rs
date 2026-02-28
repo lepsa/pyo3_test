@@ -1,12 +1,12 @@
 mod foo;
-
+mod parser;
 use pyo3::prelude::*;
 
 /// A Python module implemented in Rust.
 #[pymodule]
 mod pyo3_test {
     use pyo3::{prelude::*, types::*};
-    use crate::foo::{self, Bar};
+    use crate::{foo::{self, Bar}, parser::*};
 
     /// Formats the sum of two numbers as string.
     /// Mixing python macros and pure rust library code
@@ -79,6 +79,16 @@ mod pyo3_test {
         #[staticmethod]
         fn static_demo() -> String {
             Bar::<Py<PyAny>>::static_demo()
+        }
+
+        #[staticmethod]
+        fn foo() -> String {
+            let p = crate::parser::foo();
+            let input = "cd['e']fffggg";
+            match p.parse(&input) {
+                Ok((s, c)) => format!("found {}, remaining {:?}", c, s),
+                Err(e) => format!("error {}", e)
+            }
         }
     }
 }
