@@ -10,8 +10,7 @@
 // non-deterministic in their parse tree, this often
 // isn't the case, nor helpful. An error telling us
 // what happened is more useful in most cases.
-
-use std::{collections::LinkedList, fmt::Debug, marker::PhantomData, process::Output, str::Chars};
+use std::{collections::LinkedList, fmt::Debug, marker::PhantomData, str::Chars};
 
 pub trait Input: Clone + Sized {
     type Item;
@@ -39,30 +38,39 @@ pub struct Ap<PF, PA> {
     pub pf: PF,
     pub pa: PA,
 }
-impl<I, O, E, A, F, PA, PF> Parser<I> for Ap<PF, PA>
-where
+impl<
     I: Input,
-    F: Fn(&A) -> O,
-    PF: Parser<I, Output = F, Error = E>,
+    O,
+    E,
+    A,
+    F: Fn(A) -> O + Clone,
     PA: Parser<I, Output = A, Error = E>,
+    PF: Parser<I, Output = F, Error = E>,
+> Parser<I> for Ap<PF, PA>
 {
     type Output = O;
     type Error = E;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        let (i, f) = self.pf.parse(i)?;
-        let (i, a) = self.pa.parse(&i)?;
-
-        Ok((i, f(&a)))
+        self.pf
+            .clone()
+            .and_then(move |f: F| self.pa.clone().map(f.clone()))
+            .parse(i)
     }
 }
 
-pub fn ap<I: Input, A, O, F, PF, PA, E>(pf: PF, pa: PA) -> impl Parser<I, Output = O, Error = E>
-where
-    F: Fn(&A) -> O,
+pub fn ap<
+    I: Input,
+    A,
+    O,
+    F: Fn(A) -> O + Clone,
     PF: Parser<I, Output = F, Error = E>,
     PA: Parser<I, Output = A, Error = E>,
-{
+    E,
+>(
+    pf: PF,
+    pa: PA,
+) -> Ap<PF, PA> {
     pf.ap::<A, O, F, PF, PA, E>(pa)
 }
 
@@ -71,28 +79,22 @@ pub struct Map<P, F> {
     pub parser: P,
     pub func: F,
 }
-impl<I, O, E, P, F> Parser<I> for Map<P, F>
-where
-    I: Input,
-    P: Parser<I, Error = E>,
-    F: Fn(&P::Output) -> O + Clone,
+impl<I: Input, O, E, P: Parser<I, Error = E>, F: Fn(P::Output) -> O + Clone> Parser<I>
+    for Map<P, F>
 {
     type Output = O;
     type Error = E;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        match self.parser.parse(i) {
-            Err(e) => Err(e),
-            Ok((i, o)) => Ok((i, (self.func)(&o))),
-        }
+        let (i, o) = self.parser.parse(i)?;
+        Ok((i, (self.func)(o)))
     }
 }
 
-pub fn map<I: Input, O, E, P, F>(parser: P, f: F) -> impl Parser<I, Output = O, Error = E>
-where
-    P: Parser<I, Error = E>,
-    F: Fn(&P::Output) -> O + Clone,
-{
+pub fn map<I: Input, O, E, P: Parser<I, Error = E>, F: Fn(P::Output) -> O + Clone>(
+    parser: P,
+    f: F,
+) -> Map<P, F> {
     parser.map(f)
 }
 
@@ -100,30 +102,19 @@ where
 pub struct Some<P> {
     pub parser: P,
 }
-impl<I, O, E, P> Parser<I> for Some<P>
-where
-    I: Input,
-    P: Parser<I, Output = O, Error = E>,
-{
+impl<I: Input, O, E, P: Parser<I, Output = O, Error = E>> Parser<I> for Some<P> {
     type Output = LinkedList<P::Output>;
     type Error = P::Error;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        let parser = self.parser.clone();
-        match self.parser.parse(i) {
-            Ok((i, o)) => many(parser).parse(&i).map(|(i, mut oo)| {
-                oo.push_front(o);
-                (i, oo)
-            }),
-            Err(e) => Err(e),
-        }
+        let (i, o) = self.parser.parse(i)?;
+        let (i, mut l) = many(self.parser.clone()).parse(&i)?;
+        l.push_front(o);
+        Ok((i, l))
     }
 }
 
-pub fn some<I: Input, O, E, P>(p: P) -> Some<P>
-where
-    P: Parser<I, Output = O, Error = E>,
-{
+pub fn some<I: Input, O, E, P: Parser<I, Output = O, Error = E>>(p: P) -> Some<P> {
     p.some()
 }
 
@@ -131,30 +122,23 @@ where
 pub struct Many<P> {
     pub parser: P,
 }
-impl<I, O, E, P> Parser<I> for Many<P>
-where
-    I: Input,
-    P: Parser<I, Output = O, Error = E>,
-{
+impl<I: Input, O, E, P: Parser<I, Output = O, Error = E>> Parser<I> for Many<P> {
     type Output = LinkedList<P::Output>;
     type Error = P::Error;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        let parser = self.parser.clone();
         match self.parser.parse(i) {
-            Ok((i, o)) => many(parser).parse(&i).map(|(i, mut oo)| {
-                oo.push_front(o);
-                (i, oo)
-            }),
+            Ok((i, o)) => {
+                let (i, mut l) = many(self.parser.clone()).parse(&i)?;
+                l.push_front(o);
+                Ok((i, l))
+            }
             Err(_) => Ok((i.to_owned(), LinkedList::new())),
         }
     }
 }
 
-pub fn many<I: Input, O, E, P>(p: P) -> Many<P>
-where
-    P: Parser<I, Output = O, Error = E>,
-{
+pub fn many<I: Input, O, E, P: Parser<I, Output = O, Error = E>>(p: P) -> Many<P> {
     p.many()
 }
 
@@ -163,21 +147,16 @@ pub struct Pure<I, O, E> {
     value: O,
     phantom: PhantomData<(I, E)>,
 }
-impl<I, O, E> Parser<I> for Pure<I, O, E>
-where
-    I: Input,
-    O: Clone,
-    E: Clone,
-{
+impl<I: Input, O: Clone, E: Clone> Parser<I> for Pure<I, O, E> {
     type Output = O;
     type Error = E;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        Ok((i.to_owned(), self.value.clone()))
+        Ok((i.clone(), self.value.clone()))
     }
 }
 
-pub fn pure<I: Input, O, E>(o: O) -> Pure<I, O, E> {
+pub fn pure<I: Input, O: Clone, E: Clone>(o: O) -> Pure<I, O, E> {
     Pure {
         value: o,
         phantom: PhantomData,
@@ -189,20 +168,18 @@ pub struct Satisfy<P, F> {
     parser: P,
     f: F,
 }
-impl<I, P, F> Parser<I> for Satisfy<P, F>
-where
+impl<
     I: Input,
-    P: Parser<I>,
-    F: Fn(&P::Output) -> bool + Clone,
-    P::Error: From<String>,
-    P::Output: Debug,
+    P: Parser<I, Output: Debug + Clone, Error: From<String>>,
+    F: Fn(P::Output) -> bool + Clone,
+> Parser<I> for Satisfy<P, F>
 {
     type Output = P::Output;
     type Error = P::Error;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
         let (input, o) = self.parser.parse(i)?;
-        if (self.f)(&o) {
+        if (self.f)(o.clone()) {
             Ok((input, o))
         } else {
             Result::Err(format!("Unexpected input: {:?}", o).into())
@@ -210,12 +187,25 @@ where
     }
 }
 
+fn satisfy<
+    I: Input,
+    P: Parser<I, Output: Debug + Clone, Error: From<String>>,
+    F: Fn(P::Output) -> bool + Clone,
+>(
+    parser: P,
+    f: F,
+) -> Satisfy<P, F> {
+    parser.satisfy(f)
+}
+
 #[derive(Clone)]
 pub struct Surrounded<P, A> {
     parser: P,
     surround: A,
 }
-impl<I: Input, E, P: Parser<I, Error = E>, A: Parser<I, Error = E>> Parser<I> for Surrounded<P, A> {
+impl<I: Input, E, P: Parser<I, Error = E>, A: Parser<I, Error = E>> Parser<I>
+    for Surrounded<P, A>
+{
     type Output = P::Output;
     type Error = E;
 
@@ -228,11 +218,10 @@ impl<I: Input, E, P: Parser<I, Error = E>, A: Parser<I, Error = E>> Parser<I> fo
     }
 }
 
-pub fn surround<I: Input, O, SO, E, P, S>(parser: P, surround: S) -> Surrounded<P, S>
-where
-    P: Parser<I, Output = O, Error = E>,
-    S: Parser<I, Output = SO, Error = E>,
-{
+pub fn surround<I: Input, O, E, P: Parser<I, Output = O, Error = E>, S: Parser<I, Error = E>>(
+    parser: P,
+    surround: S,
+) -> Surrounded<P, S> {
     parser.surround(surround)
 }
 
@@ -257,12 +246,18 @@ impl<I: Input, E, P: Parser<I, Error = E>, B: Parser<I, Error = E>, K: Parser<I,
     }
 }
 
-pub fn bracket<I: Input, O, BO, KO, E, P, B, K>(parser: P, brac: B, ket: K) -> Bracket<P, B, K>
-where
+pub fn bracket<
+    I: Input,
+    O,
+    E,
     P: Parser<I, Output = O, Error = E>,
-    B: Parser<I, Output = BO, Error = E>,
-    K: Parser<I, Output = KO, Error = E>,
-{
+    B: Parser<I, Error = E>,
+    K: Parser<I, Error = E>,
+>(
+    parser: P,
+    brac: B,
+    ket: K,
+) -> Bracket<P, B, K> {
     parser.bracket(brac, ket)
 }
 
@@ -282,10 +277,7 @@ impl<I: Input, E, P: Parser<I, Error = E>> Parser<I> for Optional<P> {
     }
 }
 
-pub fn optional<I: Input, O, E, P>(parser: P) -> Optional<P>
-where
-    P: Parser<I, Output = O, Error = E>,
-{
+pub fn optional<I: Input, O, E, P: Parser<I, Output = O, Error = E>>(parser: P) -> Optional<P> {
     parser.optional()
 }
 
@@ -305,17 +297,119 @@ impl<I: Input, E, P: Parser<I, Error = E>> Parser<I> for SkipOptional<P> {
     }
 }
 
-pub fn skip_optional<I: Input, O, E, P>(parser: P) -> SkipOptional<P>
-where
-    P: Parser<I, Output = O, Error = E>,
-{
+pub fn skip_optional<I: Input, O, E, P: Parser<I, Output = O, Error = E>>(
+    parser: P,
+) -> SkipOptional<P> {
     parser.skip_optional()
+}
+
+#[derive(Clone)]
+pub struct SkipMany<P> {
+    parser: P,
+}
+impl<I: Input, E, P: Parser<I, Error = E>> Parser<I> for SkipMany<P> {
+    type Output = ();
+    type Error = E;
+
+    fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        match self
+            .parser
+            .clone()
+            .seq(skip_many(self.parser.clone()))
+            .parse(i)
+        {
+            Err(_) => Ok((i.to_owned(), ())),
+            o => o,
+        }
+    }
+}
+
+pub fn skip_many<I: Input, O, E, P: Parser<I, Output = O, Error = E>>(parser: P) -> SkipMany<P> {
+    parser.skip_many()
+}
+
+#[derive(Clone)]
+pub struct SkipSome<P> {
+    parser: P,
+}
+impl<I: Input, E, P: Parser<I, Error = E>> Parser<I> for SkipSome<P> {
+    type Output = ();
+    type Error = E;
+
+    fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        let (i, _) = self.parser.clone().parse(i)?;
+        skip_many(self.parser.clone()).parse(&i)
+    }
+}
+
+pub fn skip_some<I: Input, O, E, P: Parser<I, Output = O, Error = E>>(parser: P) -> SkipSome<P> {
+    parser.skip_some()
+}
+
+#[derive(Clone)]
+pub struct NotFollowedBy<P, Q> {
+    parser: P,
+    follow: Q,
+}
+impl<
+    I: Input,
+    O,
+    E: From<String>,
+    P: Parser<I, Output = O, Error = E>,
+    Q: Parser<I, Output: Debug, Error = E>,
+> Parser<I> for NotFollowedBy<P, Q>
+{
+    type Output = P::Output;
+    type Error = E;
+
+    fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        let (i, o) = self.parser.clone().parse(i)?;
+        match self.follow.parse(&i) {
+            Err(_) => Ok((i.to_owned(), o)),
+            Ok((_, e)) => Err(format!("Unexpected: {:?}", e).into()),
+        }
+    }
+}
+
+pub fn not_followed_by<
+    I: Input,
+    O,
+    QO,
+    E,
+    P: Parser<I, Output = O, Error = E>,
+    Q: Parser<I, Output = QO, Error = E>,
+>(
+    parser: P,
+    follow: Q,
+) -> NotFollowedBy<P, Q> {
+    parser.not_followed_by(follow)
+}
+
+#[derive(Clone)]
+pub struct Unexpected<E> {
+    message: String,
+    phantom: PhantomData<E>,
+}
+impl<I: Input, E: From<String> + Clone> Parser<I> for Unexpected<E> {
+    type Output = ();
+    type Error = E;
+
+    fn parse(&self, _i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        Err(self.message.clone().into())
+    }
+}
+
+pub fn unexpected<I: Input, O, E>(message: String) -> Unexpected<O> {
+    Unexpected {
+        message,
+        phantom: PhantomData,
+    }
 }
 
 #[derive(Clone)]
 pub struct Count<P> {
     parser: P,
-    count: u32
+    count: u32,
 }
 impl<I: Input, E, P: Parser<I, Error = E>> Parser<I> for Count<P> {
     type Output = LinkedList<P::Output>;
@@ -326,64 +420,45 @@ impl<I: Input, E, P: Parser<I, Error = E>> Parser<I> for Count<P> {
         match self.count {
             0 => Ok((i.to_owned(), LinkedList::new())),
             n => {
-                match self.parser.parse(i) {
-                    Err(e) => Err(e),
-                    Ok((i, o)) => match parser.count(n-1).parse(&i) {
-                        Err(e) => Err(e),
-                        Ok((i, mut l)) => {
-                            l.push_front(o);
-                            Ok((i, l))
-                        }
-                    }
-                }
+                let (i, o) = self.parser.parse(i)?;
+                let (i, mut l) = parser.count(n - 1).parse(&i)?;
+                l.push_front(o);
+                Ok((i, l))
             }
         }
     }
 }
 
-pub fn count<I: Input, O, E, P>(parser: P, n: u32) -> Count<P>
-where
-    P: Parser<I, Output = O, Error = E>,
-{
+pub fn count<I: Input, O, E, P: Parser<I, Output = O, Error = E>>(parser: P, n: u32) -> Count<P> {
     parser.count(n)
 }
 
 #[derive(Clone)]
 pub struct ManyTill<P, Q> {
     parser: P,
-    end: Q
+    end: Q,
 }
-impl<I: Input, E, P: Parser<I, Error = E>, Q: Parser<I, Error=E>> Parser<I> for ManyTill<P, Q> {
+impl<I: Input, E, P: Parser<I, Error = E>, Q: Parser<I, Error = E>> Parser<I> for ManyTill<P, Q> {
     type Output = LinkedList<P::Output>;
     type Error = E;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        let parser = self.parser.clone();
-        let end = self.end.clone();
-
         match self.end.parse(i) {
             Ok((i, _)) => Ok((i, LinkedList::new())),
-            Err(_) => match self.parser.parse(i) {
-                Err(e) => Err(e),
-                Ok((i, o)) => {
-                    match many_till(parser, end).parse(&i) {
-                        Ok((i, mut l)) => {
-                            l.push_front(o);
-                            Ok((i, l))
-                        },
-                        Err(e) => Err(e)
-                    }
-                }
+            Err(_) => {
+                let (i, o) = self.parser.parse(i)?;
+                let (i, mut l) = many_till(self.parser.clone(), self.end.clone()).parse(&i)?;
+                l.push_front(o);
+                Ok((i, l))
             }
         }
     }
 }
 
-pub fn many_till<I: Input, O, E, P, Q>(parser: P, end: Q) -> ManyTill<P, Q>
-where
-    P: Parser<I, Output = O, Error = E>,
-    Q: Parser<I, Error = E>,
-{
+pub fn many_till<I: Input, O, E, P: Parser<I, Output = O, Error = E>, Q: Parser<I, Error = E>>(
+    parser: P,
+    end: Q,
+) -> ManyTill<P, Q> {
     parser.many_till(end)
 }
 
@@ -393,32 +468,181 @@ pub struct SepBy<P, S> {
     sep: S,
 }
 
-impl<I: Input, E, P: Parser<I, Error = E>, S: Parser<I, Error = E>> Parser<I> for SepBy<P, S> {
+impl<I: Input, E: Clone, O: Clone, P: Parser<I, Output = O, Error = E>, S: Parser<I, Error = E>>
+    Parser<I> for SepBy<P, S>
+{
     type Output = LinkedList<P::Output>;
     type Error = E;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        let sep = self.sep.clone();
-        let parser = self.parser.clone();
-        match self.parser.clone().parse(i) {
-            Ok((i, o)) => many(sep.seq(parser)).parse(&i).map(|(i, mut l)| {
-                l.push_front(o);
-                (i.to_owned(), l)
-            }),
-            _ => Ok((i.to_owned(), LinkedList::new())),
-        }
+        self.parser.clone()
+            .sep_by_1(self.sep.clone())
+            .or(pure(LinkedList::new()))
+            .parse(i)
     }
 }
 
-pub fn sep_by<I: Input, O, E, P, S>(
-    parser: P,
-    sep: S,
-) -> impl Parser<I, Output = LinkedList<O>, Error = E>
-where
+pub fn sep_by<
+    I: Input,
+    O: Clone,
+    E: Clone,
     P: Parser<I, Output = O, Error = E>,
     S: Parser<I, Error = E>,
-{
+>(
+    parser: P,
+    sep: S,
+) -> SepBy<P, S> {
     parser.sep_by(sep)
+}
+
+fn prepend_list<O: Clone>(o: O, mut l: LinkedList<O>) -> LinkedList<O> {
+    l.push_front(o);
+    l.clone()
+}
+
+#[derive(Clone)]
+pub struct EndBy1<P, S> {
+    parser: P,
+    sep: S,
+}
+
+impl<
+    I: Input,
+    O: Clone,
+    SO,
+    E: Clone,
+    P: Parser<I, Output = O, Error = E>,
+    S: Parser<I, Output = SO, Error = E>,
+> Parser<I> for EndBy1<P, S>
+{
+    type Output = LinkedList<O>;
+    type Error = E;
+
+    fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        let o = or(
+            seq(
+                self.sep.clone(),
+                sep_end_by(self.parser.clone(), self.sep.clone()),
+            ),
+            pure(LinkedList::new()),
+        );
+        let p = lift_a_2(prepend_list, self.parser.clone(), o);
+        p.parse(i)
+    }
+}
+
+pub fn end_by_1<
+    I: Input,
+    O: Clone,
+    E: Clone,
+    P: Parser<I, Output = O, Error = E>,
+    S: Parser<I, Error = E>,
+>(
+    parser: P,
+    sep: S,
+) -> EndBy1<P, S> {
+    parser.end_by_1(sep)
+}
+
+#[derive(Clone)]
+pub struct EndBy<P, S> {
+    parser: P,
+    sep: S,
+}
+
+impl<I: Input, O: Clone, E: Clone, P: Parser<I, Output = O, Error = E>, S: Parser<I, Error = E>>
+    Parser<I> for EndBy<P, S>
+{
+    type Output = LinkedList<O>;
+    type Error = E;
+
+    fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        self.parser.clone()
+            .sep_end_by_1(self.sep.clone())
+            .or(pure(LinkedList::new()))
+            .parse(i)
+    }
+}
+
+pub fn end_by<
+    I: Input,
+    O: Clone,
+    E: Clone,
+    P: Parser<I, Output = O, Error = E>,
+    S: Parser<I, Error = E>,
+>(
+    parser: P,
+    sep: S,
+) -> EndBy<P, S> {
+    parser.end_by(sep)
+}
+
+#[derive(Clone)]
+pub struct SepEndBy<P, S> {
+    parser: P,
+    sep: S,
+}
+
+impl<I: Input, O: Clone, E: Clone, P: Parser<I, Output = O, Error = E>, S: Parser<I, Error = E>>
+    Parser<I> for SepEndBy<P, S>
+{
+    type Output = LinkedList<P::Output>;
+    type Error = E;
+
+    fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        self.parser.clone()
+            .sep_end_by_1(self.sep.clone())
+            .or(pure(LinkedList::new()))
+            .parse(i)
+    }
+}
+
+pub fn sep_end_by<
+    I: Input,
+    O: Clone,
+    E: Clone,
+    P: Parser<I, Output = O, Error = E>,
+    S: Parser<I, Error = E>,
+>(
+    parser: P,
+    sep: S,
+) -> SepEndBy<P, S> {
+    parser.sep_end_by(sep)
+}
+
+#[derive(Clone)]
+pub struct SepEndBy1<P, S> {
+    parser: P,
+    sep: S,
+}
+
+impl<I: Input, O: Clone, E: Clone, P: Parser<I, Output = O, Error = E>, S: Parser<I, Error = E>>
+    Parser<I> for SepEndBy1<P, S>
+{
+    type Output = LinkedList<P::Output>;
+    type Error = E;
+
+    fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
+        some(
+            self.parser.clone()
+                .and_then(move |o: O| self.sep.clone().map(move |_| o.clone())),
+        )
+        .or(pure(LinkedList::new()))
+        .parse(i)
+    }
+}
+
+pub fn sep_end_by_1<
+    I: Input,
+    O: Clone,
+    E: Clone,
+    P: Parser<I, Output = O, Error = E>,
+    S: Parser<I, Error = E>,
+>(
+    parser: P,
+    sep: S,
+) -> SepEndBy1<P, S> {
+    parser.sep_end_by_1(sep)
 }
 
 #[derive(Clone)]
@@ -427,31 +651,34 @@ pub struct SepBy1<P, S> {
     sep: S,
 }
 
-impl<I: Input, E, P: Parser<I, Error = E>, S: Parser<I, Error = E>> Parser<I> for SepBy1<P, S> {
+impl<
+    I: Input,
+    O: Clone,
+    SO,
+    E,
+    P: Parser<I, Output = O, Error = E>,
+    S: Parser<I, Output = SO, Error = E>,
+> Parser<I> for SepBy1<P, S>
+{
     type Output = LinkedList<P::Output>;
     type Error = E;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        let sep = self.sep.clone();
-        let parser = self.parser.clone();
-        match self.parser.clone().parse(i) {
-            Ok((i, o)) => many(sep.seq(parser)).parse(&i).map(|(i, mut l)| {
-                l.push_front(o);
-                (i.to_owned(), l)
-            }),
-            Err(e) => Err(e),
-        }
+        let pa = many(self.sep.clone().seq(self.parser.clone()));
+        lift_a_2(prepend_list, self.parser.clone(), pa).parse(i)
     }
 }
 
-pub fn sep_by_1<I: Input, O, E, P, S>(
-    parser: P,
-    sep: S,
-) -> impl Parser<I, Output = LinkedList<O>, Error = E>
-where
+pub fn sep_by_1<
+    I: Input,
+    O: Clone,
+    E,
     P: Parser<I, Output = O, Error = E>,
     S: Parser<I, Error = E>,
-{
+>(
+    parser: P,
+    sep: S,
+) -> SepBy1<P, S> {
     parser.sep_by_1(sep)
 }
 
@@ -471,11 +698,10 @@ impl<I: Input, E, P: Parser<I, Error = E>, Q: Parser<I, Error = E>> Parser<I> fo
     }
 }
 
-pub fn seq<I: Input, O, E, P, Q>(a: P, b: Q) -> impl Parser<I, Output = Q::Output, Error = E>
-where
-    P: Parser<I, Error = E>,
-    Q: Parser<I, Output = O, Error = E>,
-{
+pub fn seq<I: Input, O, E, P: Parser<I, Error = E>, Q: Parser<I, Output = O, Error = E>>(
+    a: P,
+    b: Q,
+) -> Seq<P, Q> {
     a.seq(b)
 }
 
@@ -485,11 +711,17 @@ pub struct And<F, G> {
     g: G,
 }
 
-pub fn and<I: Input, A, B, E, F, G>(f: F, g: G) -> impl Parser<I, Output = (A, B), Error = E>
-where
+pub fn and<
+    I: Input,
+    A,
+    B,
+    E,
     F: Parser<I, Output = A, Error = E>,
     G: Parser<I, Output = B, Error = E>,
-{
+>(
+    f: F,
+    g: G,
+) -> And<F, G> {
     f.and(g)
 }
 
@@ -517,7 +749,7 @@ impl<
     B,
     P: Parser<I, Output = A, Error = E>,
     Q: Parser<I, Output = B, Error = E>,
-    F: Fn(&A) -> Q + Clone,
+    F: Fn(A) -> Q + Clone,
 > Parser<I> for AndThen<P, F>
 {
     type Output = Q::Output;
@@ -525,7 +757,7 @@ impl<
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
         let (i, a) = self.parser.parse(i)?;
-        let (i, b) = (self.f)(&a).parse(&i)?;
+        let (i, b) = (self.f)(a).parse(&i)?;
         Ok((i, b))
     }
 }
@@ -537,11 +769,11 @@ pub fn and_then<
     B,
     P: Parser<I, Output = A, Error = E>,
     Q: Parser<I, Output = B, Error = E>,
-    F: Fn(&A) -> Q + Clone,
+    F: Fn(A) -> Q + Clone,
 >(
     parser: P,
     func: F,
-) -> impl Parser<I, Output = B, Error = E> {
+) -> AndThen<P, F> {
     parser.and_then(func)
 }
 
@@ -557,21 +789,20 @@ impl<I: Input, O, E, F: Parser<I, Output = O, Error = E>, G: Parser<I, Output = 
     type Error = F::Error;
 
     fn parse(&self, i: &I) -> ParseResult<I, Self::Output, Self::Error> {
-        match self.f.parse(i) {
-            Err(_e1) => match self.g.parse(i) {
-                Err(e2) => Err(e2),
-                res => res,
-            },
-            res => res,
-        }
+        self.f.parse(i).or_else(|_| self.g.parse(i))
     }
 }
 
-pub fn or<I: Input, O, E, F, G>(f: F, g: G) -> impl Parser<I, Output = O, Error = E>
-where
+pub fn or<
+    I: Input,
+    O,
+    E,
     F: Parser<I, Output = O, Error = E>,
     G: Parser<I, Output = O, Error = E>,
-{
+>(
+    f: F,
+    g: G,
+) -> Or<F, G> {
     f.or(g)
 }
 
@@ -583,63 +814,39 @@ pub trait Parser<I: Input>: Clone + Sized {
     fn parse(&self, input: &I) -> ParseResult<I, Self::Output, Self::Error>;
 
     // Provided methods
-    fn map<F, O2>(self, f: F) -> Map<Self, F>
-    where
-        F: Fn(&Self::Output) -> O2,
-        Self: Sized,
-    {
+    fn map<F: Fn(Self::Output) -> O2, O2>(self, f: F) -> Map<Self, F> {
         Map {
             parser: self,
             func: f,
         }
     }
-    fn and<G, O>(self, g: G) -> And<Self, G>
-    where
-        G: Parser<I, Output = O, Error = Self::Error>,
-        Self: Sized,
-    {
+    fn and<G: Parser<I, Output = O, Error = Self::Error>, O>(self, g: G) -> And<Self, G> {
         And { f: self, g: g }
     }
-    fn and_then<F>(self, f: F) -> AndThen<Self, F>
-    where
-        Self: Sized,
-    {
+    fn and_then<F>(self, f: F) -> AndThen<Self, F> {
         AndThen { parser: self, f: f }
     }
 
-    fn ap<A, O, F, PF, PA, E>(self, pa: PA) -> Ap<Self, PA>
+    fn ap<A, O, F: Fn(A) -> O, PF: Parser<I, Output = F>, PA: Parser<I, Output = A, Error = E>, E>(
+        self,
+        pa: PA,
+    ) -> Ap<Self, PA>
     where
-        F: Fn(&A) -> O,
-        PA: Parser<I, Output = A, Error = E>,
-        Self: Sized + Parser<I, Output = F, Error = E>,
+        Self: Parser<I, Output: Fn(A) -> O, Error = E>,
     {
         Ap { pf: self, pa: pa }
     }
 
-    fn or<G>(self, g: G) -> Or<Self, G>
-    where
-        G: Parser<I, Output = Self::Output, Error = Self::Error>,
-        Self: Sized,
-    {
+    fn or<G: Parser<I, Output = Self::Output, Error = Self::Error>>(self, g: G) -> Or<Self, G> {
         Or { f: self, g: g }
     }
-    fn satisfy<F>(self, f: F) -> Satisfy<Self, F>
-    where
-        F: Fn(&Self::Output) -> bool,
-        Self: Sized,
-    {
+    fn satisfy<F: Fn(Self::Output) -> bool + Clone>(self, f: F) -> Satisfy<Self, F> {
         Satisfy { parser: self, f: f }
     }
-    fn many(self) -> Many<Self>
-    where
-        Self: Sized,
-    {
+    fn many(self) -> Many<Self> {
         Many { parser: self }
     }
-    fn some(self) -> Some<Self>
-    where
-        Self: Sized,
-    {
+    fn some(self) -> Some<Self> {
         Some { parser: self }
     }
     fn surround<S>(self, surround: S) -> Surrounded<Self, S> {
@@ -661,6 +868,12 @@ pub trait Parser<I: Input>: Clone + Sized {
     fn skip_optional(self) -> SkipOptional<Self> {
         SkipOptional { parser: self }
     }
+    fn skip_many(self) -> SkipMany<Self> {
+        SkipMany { parser: self }
+    }
+    fn skip_some(self) -> SkipSome<Self> {
+        SkipSome { parser: self }
+    }
     fn seq<Q>(self, b: Q) -> Seq<Self, Q> {
         Seq { a: self, b }
     }
@@ -670,73 +883,136 @@ pub trait Parser<I: Input>: Clone + Sized {
     fn sep_by_1<S>(self, sep: S) -> SepBy1<Self, S> {
         SepBy1 { parser: self, sep }
     }
+    fn sep_end_by<S>(self, sep: S) -> SepEndBy<Self, S> {
+        SepEndBy { parser: self, sep }
+    }
+    fn sep_end_by_1<S>(self, sep: S) -> SepEndBy1<Self, S> {
+        SepEndBy1 { parser: self, sep }
+    }
+    fn end_by<S>(self, sep: S) -> EndBy<Self, S> {
+        EndBy { parser: self, sep }
+    }
+    fn end_by_1<S>(self, sep: S) -> EndBy1<Self, S> {
+        EndBy1 { parser: self, sep }
+    }
     fn count(self, n: u32) -> Count<Self> {
-        Count { parser: self, count: n }
+        Count {
+            parser: self,
+            count: n,
+        }
     }
     fn many_till<Q>(self, end: Q) -> ManyTill<Self, Q> {
         ManyTill { parser: self, end }
     }
+    fn not_followed_by<Q>(self, follow: Q) -> NotFollowedBy<Self, Q> {
+        NotFollowedBy {
+            parser: self,
+            follow,
+        }
+    }
+    fn void(self) -> impl Parser<I, Output = (), Error = Self::Error> {
+        self.map(|_| ())
+    }
 }
 
 #[derive(Clone)]
-pub struct AnyChar();
-impl<I: Input<Item = char>> Parser<I> for AnyChar {
+pub struct AnyChar<I, E>(PhantomData<(I, E)>);
+impl<I: Input<Item = char>, E: From<String> + Clone> Parser<I> for AnyChar<I, E> {
     type Output = I::Item;
-    type Error = String;
+    type Error = E;
 
     fn parse(&self, input: &I) -> ParseResult<I, Self::Output, Self::Error> {
         let mut i = I::iter(input);
         match i.next() {
-            None => Result::Err("End Of File".to_string()),
+            None => Result::Err(format!("End Of File").into()),
             Some(c) => Result::Ok((I::from_iter(&i), c)),
         }
     }
 }
 
+pub fn any_char<I: Input<Item = char>, E:From<String> + Clone>() -> AnyChar<I, E> {
+    AnyChar(PhantomData)
+}
+
+pub fn char<I: Input<Item = char>, E: From<String> + Clone>(c: char) -> impl Parser<I, Output = char, Error = E> {
+    satisfy(any_char(), move |c_| c_ == c)
+}
+
 #[derive(Clone)]
-pub struct EOF();
-impl<I: Input<Item : Debug>> Parser<I> for EOF where {
+pub struct EOF<E>(PhantomData<E>);
+impl<I: Input<Item: Debug>, E:From<String> + Clone> Parser<I> for EOF<E> {
     type Output = ();
-    type Error = String;
+    type Error = E;
 
     fn parse(&self, input: &I) -> ParseResult<I, Self::Output, Self::Error> {
         let mut i = I::iter(input);
         match i.next() {
             None => Ok((input.to_owned(), ())),
-            Some(c) => Err(format!("Expected EOF, got {:?}", c))
+            Some(c) => Err(format!("Expected EOF, got {:?}", c).into()),
         }
     }
 }
 
-pub fn char<I: Input<Item = char>>(c: char) -> impl Parser<I, Output = char, Error = String> {
-    <AnyChar as Parser<I>>::satisfy::<_>(AnyChar(), move |c_| c_ == &c)
+pub fn eof<I: Input<Item: Debug>, E: From<String> + Clone>() -> EOF<E> {
+    EOF(PhantomData)
 }
 
-pub fn eof<I: Input<Item: Debug>>() -> impl Parser<I, Output = (), Error = String> {
-    EOF()
+fn lift_a_2<
+    A: Clone,
+    B,
+    I: Input,
+    O,
+    F: Fn(A, B) -> O + Clone,
+    PA: Parser<I, Output = A, Error = E>,
+    PB: Parser<I, Output = B, Error = E>,
+    E,
+>(
+    f: F,
+    pa: PA,
+    pb: PB,
+) -> impl Parser<I, Output = O, Error = E> {
+    pa.and_then(move |a: A| {
+        let f = f.clone();
+        pb.clone().map(move |b: B| f.clone()(a.clone(), b))
+    })
 }
 
 pub fn foo<I: Input<Item = char>>() -> impl Parser<I, Output = String, Error = String> {
+    let f = |s: String| Parser::map(count(char('f'), 3), move |_| s.clone())
+    .and_then(|s: String| skip_some(char('g')).map(move |_| s.clone()))
+    .and_then(|s: String| skip_optional(char('r')).map(move |_| s.clone()))
+    .and_then(|s: String| {
+        many_till(not_followed_by(skip_many(char('h')), char('q')), char('f'))
+            .map(move |_| s.clone())
+    })
+    .and_then(|s: String| sep_by(char('x'), char('y')).map(move |_| s.clone()))
+    .and_then(|s: String| end_by(char('z'), char('x')).map(move |_| s.clone()))
+    .and_then(|s: String| end_by_1(char('y'), char('z')).map(move |_| s.clone()))
+    .and_then(|s: String| sep_end_by_1(char('x'), char('y')).map(move |_| s.clone()))
+    .and_then(|s: String| sep_by_1(char('z'), char('x')).map(move |_| s.clone()))
+    .and_then(|s: String| {
+        sep_by(char('y'), char('z').void())
+            .seq(eof::<I, String>())
+            .map(move |_| s.clone())
+    });
     and_then(
         and(
             map(
-                or(
-                    char('a').and(char('b')),
-                    char('c').and(char('d')),
-                ),
-                |t| format!("({}. {})", t.0, t.1),
+                or(char('a').and(char('b')), char('c').and(char('d'))),
+                |t: (char, char)| format!("({}. {})", t.0, t.1),
             ),
             ap(
-                pure(|l: &LinkedList<Option<char>>| format!("{:?}", l)),
-                some(bracket(optional(surround(char('e'), char('\''))), char('['), char(']'))),
+                pure(|l: LinkedList<Option<char>>| format!("{:?}", l)),
+                some(bracket(
+                    optional(surround(char('e'), char('\''))),
+                    char('['),
+                    not_followed_by(
+                        char(']'),
+                        unexpected::<I, String, String>("unexpected fail".to_string()),
+                    ),
+                )),
             ),
         ),
-        |t: &(String, String)| pure(format!("{:?} and {:?}", t.0, t.1)),
-    ).and_then(|s: &String| {
-        let s = s.to_owned();
-        count(char('f'), 3).map(move |_| s.clone())
-    }).and_then(|s: &String| {
-        let s = s.to_owned();
-        many_till(char('g'), eof()).map(move |_| s.clone())
-    })
+        |t: (String, String)| pure(format!("{:?} and {:?}", t.0, t.1)),
+    ).and_then(f)
 }

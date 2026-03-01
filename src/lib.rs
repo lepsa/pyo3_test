@@ -82,10 +82,19 @@ mod pyo3_test {
         }
 
         #[staticmethod]
-        fn foo() -> String {
-            let p = crate::parser::foo();
-            let input = "cd['e']fffggg";
-            match p.parse(&input) {
+        fn foo(input:String) -> String {
+            let p = crate::parser::foo::<&str>();
+            // let input = "cd['e']fffggg";
+            match p.parse(&input.as_str()) {
+                Ok((s, c)) => format!("found {}, remaining {:?}", c, s),
+                Err(e) => format!("error {}", e)
+            }
+        }
+                #[staticmethod]
+        fn foo_() -> String {
+            let p = crate::parser::foo::<&str>();
+            // let input = "cd['e']fffggg";
+            match p.parse(&"ab['e']fffgrhfxyxzxyzyzxyxyzxzyzy") {
                 Ok((s, c)) => format!("found {}, remaining {:?}", c, s),
                 Err(e) => format!("error {}", e)
             }
