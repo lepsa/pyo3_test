@@ -87,7 +87,7 @@ mod pyo3_test {
             // let input = "cd['e']fffggg";
             match p.parse(&input.as_str()) {
                 Ok((s, c)) => format!("found {}, remaining {:?}", c, s),
-                Err(e) => format!("error {}", e)
+                Err(e) => format!("error {:?}", e)
             }
         }
                 #[staticmethod]
@@ -96,7 +96,7 @@ mod pyo3_test {
             // let input = "cd['e']fffggg";
             match p.parse(&"ab['e']fffgrhfxyxzxyzyzxyxyzxzyzy") {
                 Ok((s, c)) => format!("found {}, remaining {:?}", c, s),
-                Err(e) => format!("error {}", e)
+                Err(e) => format!("error {:?}", e)
             }
         }
     }
