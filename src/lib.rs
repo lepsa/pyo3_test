@@ -5,8 +5,11 @@ use pyo3::prelude::*;
 /// A Python module implemented in Rust.
 #[pymodule]
 mod pyo3_test {
+    use crate::{
+        foo::{self, Bar},
+        parser::*,
+    };
     use pyo3::{prelude::*, types::*};
-    use crate::{foo::{self, Bar}, parser::*};
 
     /// Formats the sum of two numbers as string.
     /// Mixing python macros and pure rust library code
@@ -17,7 +20,7 @@ mod pyo3_test {
 
     // Direct python facing code
     #[pyfunction]
-    fn fold_list<'py>(list:Bound<'py, PyList>) -> PyResult<i32> {
+    fn fold_list<'py>(list: Bound<'py, PyList>) -> PyResult<i32> {
         list.iter().fold(Ok(0), |count, item| {
             count.and_then(|c| item.extract::<i32>().map(|i| c + i))
         })
@@ -36,10 +39,10 @@ mod pyo3_test {
         fn cls_attr() -> String {
             "cls_attr".to_string()
         }
-        
+
         // define __init__
         #[new]
-        fn new(a:String, b:String, other: Py<PyAny>) -> Self {
+        fn new(a: String, b: String, other: Py<PyAny>) -> Self {
             Self(Bar::new(a, b, other))
         }
 
@@ -70,9 +73,7 @@ mod pyo3_test {
         #[classmethod]
         fn cls_demo(cls: &Bound<'_, PyType>) -> PyResult<String> {
             let res: PyResult<Bound<'_, PyAny>> = cls.getattr("cls_attr");
-            res.map(|s| {
-                format!("Successfully called a class method: {}", s)
-            })
+            res.map(|s| format!("Successfully called a class method: {}", s))
         }
 
         // Create a static method
@@ -82,21 +83,21 @@ mod pyo3_test {
         }
 
         #[staticmethod]
-        fn foo(input:String) -> String {
-            let p = crate::parser::foo::<&str>();
+        fn foo(input: String) -> String {
+            let p = crate::parser::foo();
             // let input = "cd['e']fffggg";
-            match p.parse(&input.as_str()) {
+            match p.parse(input.as_str()) {
                 Ok((s, c)) => format!("found {}, remaining {:?}", c, s),
-                Err(e) => format!("error {:?}", e)
+                Err(e) => format!("error {:?}", e),
             }
         }
-                #[staticmethod]
+        #[staticmethod]
         fn foo_() -> String {
-            let p = crate::parser::foo::<&str>();
+            let p = crate::parser::foo();
             // let input = "cd['e']fffggg";
-            match p.parse(&"ab['e']fffgrhfxyxzxyzyzxyxyzxzyzy") {
+            match p.parse("ab['e']fffgrhfxyxzxyzyzxyxyzxz yzy") {
                 Ok((s, c)) => format!("found {}, remaining {:?}", c, s),
-                Err(e) => format!("error {:?}", e)
+                Err(e) => e.to_string(),
             }
         }
     }
