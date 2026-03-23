@@ -854,29 +854,24 @@ pub fn foo<I: Input<Item = char>>() -> impl Parser<I, Output = String> {
         .and_then(|t| char('x').many_till(char('z')).map(move |_| t))
         .and_then(|t| char('y').end_by_1(char('z')).map(move |_| t))
     }
-    fn e<I: Input<Item = char>>() -> impl Parser<I, Output = (char, char)> {
-        d().and_then(|t| {
-            char(' ')
-                .skip_many()
-                .sep_by(char('!'))
-                .sep_end_by(char('@'))
-                .end_by(char('#'))
-                .optional()
-                .map(move |_| t)
-        })
-        .and_then(|t| {
-            char('a')
-                .map(|a| move |b| format!("{} {}", a, b))
-                .ap(char('b'))
-                .void()
-                .optional()
-                .map(move |_| t)
-        })
-        .and_then(|t| {
-            lift_a_2(|_, b| id(b), char('a'), char('b'))
-                .optional()
-                .map(move |_| t)
-        })
+    fn e<I: Input<Item = char>>() -> impl Parser<I, Output = Option<char>> {
+        let x = char('a')
+            .map(|a| move |b| format!("{} {}", a, b))
+            .ap(char('b'))
+            .void()
+            .optional();
+        let y = lift_a_2(|_, b| id(b), char('a'), char('b')).optional();
+        char(' ')
+            .skip_many()
+            .sep_by(char('!'))
+            .sep_end_by(char('@'))
+            .end_by(char('#'))
+            .optional()
+            .seq(x)
+            .seq(y)
     }
-    e().map(f)
+    d().and_then(move |t| {
+        let e_ = e();
+        e_.clone().seq(e_).map(move |_| f(t))
+    })
 }
