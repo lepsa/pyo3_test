@@ -10,11 +10,14 @@
 // non-deterministic in their parse tree, this often
 // isn't the case, nor helpful. An error telling us
 // what happened is more useful in most cases.
-use std::{collections::LinkedList, fmt::Debug, marker::PhantomData, str::Chars};
+use std::{fmt::Debug, marker::PhantomData, str::Chars, vec::Vec};
+
+use pyo3::{exceptions::PyException, *};
 
 #[derive(Clone, Debug)]
+#[pyclass]
 pub enum ParseErr {
-    EOF,
+    EOF(),
     Unexpected(String),
     Expected(char),
 }
@@ -22,9 +25,20 @@ pub enum ParseErr {
 impl ParseErr {
     pub fn to_string(&self) -> String {
         match self {
-            ParseErr::EOF => "End Of File".to_string(),
+            ParseErr::EOF() => "End Of File".to_string(),
             ParseErr::Unexpected(msg) => format!("Unexpected: {}", msg),
             ParseErr::Expected(c) => format!("Expected to see char: {}", c),
+        }
+    }
+}
+impl Into<PyErr> for ParseErr {
+    fn into(self) -> PyErr {
+        match self {
+            ParseErr::EOF() => PyErr::new::<PyException, _>("EOF".to_string()),
+            ParseErr::Unexpected(msg) => {
+                PyErr::new::<PyException, _>(format!("Unexpected: {}", msg))
+            }
+            ParseErr::Expected(c) => PyErr::new::<PyException, _>(format!("Expected: '{}'", c)),
         }
     }
 }
@@ -86,15 +100,15 @@ pub struct Some<P> {
     pub parser: P,
 }
 impl<I: Input, O, P: Parser<I, Output = O>> Parser<I> for Some<P> {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         let (mut i, o) = self.parser.parse(i)?;
-        l.push_back(o);
+        l.push(o);
         while let Ok((ii, o)) = self.parser.parse(i.clone()) {
             i = ii;
-            l.push_back(o);
+            l.push(o);
         }
         Ok((i, l))
     }
@@ -105,12 +119,12 @@ pub struct Many<P> {
     pub parser: P,
 }
 impl<I: Input, O, P: Parser<I, Output = O>> Parser<I> for Many<P> {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, mut i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         while let Ok((ii, o)) = self.parser.parse(i.clone()) {
-            l.push_back(o);
+            l.push(o);
             i = ii;
         }
         Ok((i, l))
@@ -177,7 +191,7 @@ impl<I: Input, P: Parser<I, Output: Debug>, F: Fn(&P::Output) -> bool + Clone> P
     }
 }
 
-fn satisfy<I: Input, P: Parser<I, Output: Debug>, F: Fn(&P::Output) -> bool>(
+pub fn satisfy<I: Input, P: Parser<I, Output: Debug>, F: Fn(&P::Output) -> bool>(
     parser: P,
     f: F,
 ) -> Satisfy<P, F> {
@@ -336,14 +350,14 @@ pub struct Count<P> {
     count: u32,
 }
 impl<'p, I: Input, O, P: Parser<I, Output = O>> Parser<I> for Count<P> {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, mut i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         for _ in 0..self.count {
             let (ii, o) = self.parser.parse(i)?;
             i = ii;
-            l.push_front(o);
+            l.push(o);
         }
         Ok((i, l))
     }
@@ -355,14 +369,14 @@ pub struct ManyTill<P, Q> {
     end: Q,
 }
 impl<I: Input, O, P: Parser<I, Output = O>, Q: Parser<I>> Parser<I> for ManyTill<P, Q> {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, mut i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         while let Err(_) = self.end.parse(i.clone()) {
             match self.parser.parse(i) {
                 Ok((ii, a)) => {
-                    l.push_back(a);
+                    l.push(a);
                     i = ii;
                 }
                 Err(e) => return Err(e),
@@ -379,17 +393,17 @@ pub struct SepBy<P, S> {
 }
 
 impl<I: Input, O, P: Parser<I, Output = O>, S: Parser<I>> Parser<I> for SepBy<P, S> {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         match self.parser.parse(i.clone()) {
             Err(_) => Ok((i, l)),
             Ok((mut i, o)) => {
-                l.push_back(o);
+                l.push(o);
                 while let Ok((ii, _)) = self.sep.parse(i.clone()) {
                     let (ii, o) = self.parser.parse(ii)?;
-                    l.push_back(o);
+                    l.push(o);
                     i = ii;
                 }
                 Ok((i, l))
@@ -407,17 +421,17 @@ pub struct EndBy1<P, S> {
 impl<I: Input, O, SO, P: Parser<I, Output = O>, S: Parser<I, Output = SO>> Parser<I>
     for EndBy1<P, S>
 {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         let (i, o) = self.parser.parse(i)?;
-        l.push_back(o);
+        l.push(o);
         let (mut i, _) = self.sep.parse(i)?;
         while let Ok((ii, o)) = self.parser.parse(i.clone()) {
             let (ii, _) = self.sep.parse(ii)?;
             i = ii;
-            l.push_back(o);
+            l.push(o);
         }
         Ok((i, l))
     }
@@ -430,14 +444,14 @@ pub struct EndBy<P, S> {
 }
 
 impl<I: Input, O, P: Parser<I, Output = O>, S: Parser<I>> Parser<I> for EndBy<P, S> {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, mut i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         while let Ok((ii, o)) = self.parser.parse(i.clone()) {
             let (ii, _) = self.sep.parse(ii)?;
             i = ii;
-            l.push_back(o);
+            l.push(o);
         }
         Ok((i, l))
     }
@@ -450,20 +464,20 @@ pub struct SepEndBy<P, S> {
 }
 
 impl<I: Input, O, P: Parser<I, Output = O>, S: Parser<I>> Parser<I> for SepEndBy<P, S> {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, mut i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         while let Ok((ii, o)) = self.parser.parse(i.clone()) {
             match self.sep.parse(ii.clone()) {
                 Ok((ii, _)) => {
                     i = ii;
-                    l.push_back(o);
+                    l.push(o);
                     // Keep on looping!
                 }
                 Err(_) => {
                     i = ii;
-                    l.push_back(o);
+                    l.push(o);
                     break;
                 }
             }
@@ -481,13 +495,13 @@ pub struct SepEndBy1<P, S> {
 impl<I: Input, A, B, P: Parser<I, Output = A>, S: Parser<I, Output = B>> Parser<I>
     for SepEndBy1<P, S>
 {
-    type Output = LinkedList<A>;
+    type Output = Vec<A>;
 
     fn parse(&self, i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
 
         let (mut i, o) = self.parser.parse(i)?;
-        l.push_back(o);
+        l.push(o);
         match self.sep.parse(i.clone()) {
             Ok((ii, _)) => {
                 i = ii;
@@ -502,12 +516,12 @@ impl<I: Input, A, B, P: Parser<I, Output = A>, S: Parser<I, Output = B>> Parser<
             match self.sep.parse(ii.clone()) {
                 Ok((ii, _)) => {
                     i = ii;
-                    l.push_back(o);
+                    l.push(o);
                     // Keep on looping!
                 }
                 Err(_) => {
                     i = ii;
-                    l.push_back(o);
+                    l.push(o);
                     break;
                 }
             }
@@ -525,15 +539,15 @@ pub struct SepBy1<P, S> {
 impl<I: Input, O, SO, P: Parser<I, Output = O>, S: Parser<I, Output = SO>> Parser<I>
     for SepBy1<P, S>
 {
-    type Output = LinkedList<O>;
+    type Output = Vec<O>;
 
     fn parse(&self, i: I) -> ParseResult<I, Self::Output> {
-        let mut l = LinkedList::new();
+        let mut l = Vec::new();
         let (mut i, o) = self.parser.parse(i)?;
-        l.push_back(o);
+        l.push(o);
         while let Ok((ii, _)) = self.sep.parse(i.clone()) {
             let (ii, o) = self.parser.parse(ii)?;
-            l.push_back(o);
+            l.push(o);
             i = ii;
         }
         Ok((i, l))
@@ -601,7 +615,7 @@ impl<I: Input, O, F: Parser<I, Output = O>, G: Parser<I, Output = O>> Parser<I> 
     }
 }
 
-pub trait Parser<I: Input>: Clone + Sized {
+pub trait Parser<I: Input>: Clone {
     type Output;
 
     // Required method
@@ -724,7 +738,7 @@ impl<I: Input<Item = char>> Parser<I> for AnyChar<I> {
     fn parse(&self, input: I) -> ParseResult<I, Self::Output> {
         let mut i = I::iter(&input);
         match i.next() {
-            None => Result::Err(ParseErr::EOF),
+            None => Result::Err(ParseErr::EOF()),
             Some(c) => Result::Ok((I::from_iter(&i), c)),
         }
     }
@@ -743,6 +757,35 @@ pub fn char<I: Input<Item = char>>(c: char) -> impl Parser<I, Output = char> {
             Err(ParseErr::Expected(c))
         }
     })
+}
+
+#[derive(Clone)]
+pub struct StringParser<I> {
+    target: String,
+    phantom: PhantomData<I>,
+}
+impl<I: Input<Item = char>> Parser<I> for StringParser<I> {
+    type Output = String;
+
+    fn parse(&self, input: I) -> ParseResult<I, Self::Output> {
+        let mut i = input;
+        for c in self.target.chars() {
+            match char(c).parse(i) {
+                Result::Ok((ii, _)) => {
+                    i = ii;
+                }
+                Result::Err(e) => return Result::Err(e),
+            }
+        }
+        Ok((i, self.target.clone()))
+    }
+}
+
+pub fn string<I: Input<Item = char>>(target: String) -> StringParser<I> {
+    StringParser {
+        target,
+        phantom: PhantomData,
+    }
 }
 
 #[derive(Clone)]
@@ -787,7 +830,7 @@ impl<
     }
 }
 
-fn lift_a_2<
+pub fn lift_a_2<
     A,
     B,
     I: Input,

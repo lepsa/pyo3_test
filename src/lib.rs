@@ -5,6 +5,8 @@ use pyo3::prelude::*;
 /// A Python module implemented in Rust.
 #[pymodule]
 mod pyo3_test {
+    use std::collections::HashMap;
+
     use crate::{
         foo::{self, Bar},
         parser::*,
@@ -100,5 +102,70 @@ mod pyo3_test {
                 Err(e) => e.to_string(),
             }
         }
+    }
+    
+    // A value to stand in as null, as we can't use () due to pyo3 restrictions
+    #[derive(Clone)]
+    #[pyclass]
+    pub struct Null {}
+
+    #[derive(Clone)]
+    #[pyclass]
+    pub enum Json {
+        JObject { value: HashMap<String, Json> },
+        JArray { value: Vec<Json> },
+        JNumber { value: f64 },
+        JString { value: String },
+        JBool { value: bool },
+        JNull{ value: Null},
+    }
+
+    // Rough and ready JSON parser. This plays fast and loose
+    // with whitespace and character parsing. It doesn't even
+    // try to handle numbers.
+    #[pyfunction]
+    fn jnull<'s>(input: &'s str) -> ParseResult<&'s str, ()> {
+        string("null".to_string()).void().parse(input)
+    }
+    #[pyfunction]
+    fn jbool<'s>(input: &'s str) -> ParseResult<&'s str, bool> {
+        string("true".to_string())
+            .map(|_| true)
+            .or(string("false".to_string()).map(|_| false))
+            .parse(input)
+    }
+    #[pyfunction]
+    fn jarray<'s>(input: &'s str) -> ParseResult<&'s str, Vec<Json>> {
+        lift(json)
+            .sep_by(char(','))
+            .bracket(char('['), char(']'))
+            .parse(input)
+    }
+    #[pyfunction]
+    fn jstring<'s>(input: &'s str) -> ParseResult<&'s str, String> {
+        satisfy(any_char(), |c| *c != '"')
+            .many()
+            .surround(char('"'))
+            .map(|l| l.iter().collect())
+            .parse(input)
+    }
+    #[pyfunction]
+    fn jobject<'s>(input: &'s str) -> ParseResult<&'s str, HashMap<String, Json>> {
+        let key_value = lift_a_2(|k, v| (k, v), lift(jstring), char(':').seq(lift(json)));
+        key_value
+            .sep_by(char(','))
+            .bracket(char('{'), char('}'))
+            .map(|l| l.into_iter().collect())
+            .parse(input)
+    }
+    #[pyfunction]
+    fn json<'s>(input: &'s str) -> ParseResult<&'s str, Json> {
+        lift(jnull)
+            .map(|_| Json::JNull{value: Null{}})
+            .or(lift(jbool).map(|x| Json::JBool { value: x }))
+            .or(lift(jstring).map(|x| Json::JString { value: x }))
+            .or(lift(jarray).map(|x| Json::JArray { value: x }))
+            .or(lift(jobject).map(|x| Json::JObject { value: x }))
+            .parse(input)
     }
 }
