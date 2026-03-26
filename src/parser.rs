@@ -853,7 +853,7 @@ pub fn id<A>(a: A) -> A {
 pub fn foo<I: Input<Item = char>>() -> impl Parser<I, Output = String> {
     let f = |t: (char, char)| format!("{:?}{:?}", t.0, t.1);
     fn a<I: Input<Item = char>>() -> impl Parser<I, Output = (char, char)> {
-        char('a')
+        string("+++".to_string()).seq(char('a'))
             .and(char('b'))
             .or(char('c').and(char('d')))
             .and_then(|t| {
